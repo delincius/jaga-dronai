@@ -33,7 +33,7 @@ async def arm_and_takeoff(drone):
     await drone.action.takeoff()
 
     # Wait for takeoff and stabilize
-    await asyncio.sleep(10)  # Šiek tiek laiko stabilizuotis po pakilimo
+    await asyncio.sleep(11)  # Šiek tiek laiko stabilizuotis po pakilimo
 
 async def activate_offboard(drone):
     """Aktyvuoja offboard režimą ir pastoviai siunčia pozicijos atnaujinimus."""
@@ -60,6 +60,7 @@ async def activate_offboard(drone):
         # Startuojam Offboard režimą
         await drone.offboard.start()
         print(" Offboard režimas aktyvuotas.")
+        await asyncio.sleep(3)
 
     except OffboardError as e:
         print(f" Klaida aktyvuojant offboard režimą: {e}")
@@ -68,9 +69,9 @@ async def activate_offboard(drone):
     # **Siunčiam poziciją, kad išvengti offboard išsijungimo**
     print(" Palaikomas Offboard režimas...")
     try:
-        for _ in range(50):  # Keep sending updates for 10 seconds
+        for _ in range(10):  # Keep sending updates for 10 seconds
             await drone.offboard.set_position_ned(initial_position)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
     except Exception as e:
         print(f" Klaida palaikant offboard režimą: {e}")
 
@@ -83,7 +84,7 @@ async def fly_drone_forward(drone, x, y, z, yaw):
     position = PositionNedYaw(x, y, z, yaw)
 
     try:
-        for _ in range(50):  # Move for 10 seconds (5Hz updates)
+        for _ in range(10):  # Move for 10 seconds (5Hz updates)
             await drone.offboard.set_position_ned(position)
             await asyncio.sleep(0.2)
     except OffboardError as e:
@@ -92,27 +93,23 @@ async def fly_drone_forward(drone, x, y, z, yaw):
 async def fly_square(drone):
     """Skraidinam droną kvadratiniu šablonu."""
 
-    #  grįžta į pradinę poziciją, jei ne visi ten yra.
-    await fly_drone_forward(drone, 0.0, 0.0, -5.0, 90.0)
+    # #  grįžta į pradinę poziciją, jei ne visi ten yra.
+    # await fly_drone_forward(drone, 0.0, 0.0, -5.0, 0.0)
+    # await asyncio.sleep(5)  # Šiek tiek laiko atlikti manevrą
+
+    await fly_drone_forward(drone, 5.0, 10.0, -5.0, 60.0)  # Skraidinam į pirmą kampą
     await asyncio.sleep(5)  # Šiek tiek laiko atlikti manevrą
 
-    # Move from (0,0,-5) to (5,5,-5)
-    await fly_drone_forward(drone, 5.0, 0.0, -5.0, 90.0)  # Skraidinam į pirmą kampą
-    await asyncio.sleep(5)  # Šiek tiek laiko atlikti manevrą
-
-    # Move from (5,5,-5) to (5,0,-5)
-    await fly_drone_forward(drone, 5.0, 5.0, -5.0, 90.0)  # Skraidinam į antrą kampą
+    await fly_drone_forward(drone, 0.0, 20.0, -5.0, 120.0)  # Skraidinam į antrą kampą
     await asyncio.sleep(5) # Šiek tiek laiko atlikti manevrą
 
-    # Move from (5,0,-5) to (0,0,-5)
-    await fly_drone_forward(drone, 0.0, 5.0, -5.0, 90.0)  # Skraidianam į trečią kampą
+    await fly_drone_forward(drone, -5.0, 10.0, -5.0, -120.0)  # Skraidianam į trečią kampą
     await asyncio.sleep(5) # Šiek tiek laiko atlikti manevrą
 
-    # Move from (0,0,-5) back to (0,5,-5)
-    await fly_drone_forward(drone, 0.0, 0.0, -5.0, 90.0)  # Grąžinam į pradinę poziciją.
+    await fly_drone_forward(drone, 0.0, 0.0, -5.0, -60.0)  # Grąžinam į pradinę poziciją.
     await asyncio.sleep(5) # Šiek tiek laiko atlikti manevrą
 
-    print(f"Dronas -  {drone} - užbaigė skrydį kvadratiniu šablonu!")
+    print(f"Dronas -  {drone} - užbaigė skrydį formos šablonu!")
 
 
 async def land_drone(drone):
@@ -162,10 +159,19 @@ async def control_drones():
 
     await asyncio.sleep(2)  # šiek tiek laiko stabilizuotis
 
+    await asyncio.gather(
+        fly_drone_forward(drones[0], 15.0, 0.0, -5.0, 0.0),
+        fly_drone_forward(drones[1], -10.0, 20.0, -5.0, 60.0),
+        fly_drone_forward(drones[2], 5.0, 20.0, -5.0, 30.0),
+    )
+
+    
+    await asyncio.sleep(2)  # šiek tiek laiko stabilizuotis
+
     # Nuleidžiam visus dronus
     await asyncio.gather(*(land_drone(drone) for drone in drones))
 
-    await asyncio.sleep(5) # šiek tiek laiko nusileidimui.
+    await asyncio.sleep(7) # šiek tiek laiko nusileidimui.
 
     # Išjungiam Offboard visiems dronams
     await stop_offboard_mode_for_all_drones(drones)
