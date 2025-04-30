@@ -72,12 +72,12 @@ def nearest_neighbor(points):
 async def fly_area(drone, route, offset):
     print(f"\nDronui {drone}: Maršrutas (NED koordinatės su offset):")
     
-    for point in route:
+    for i, point in enumerate(route):
         # Pritaikome offset'ą ir nustatome NED poziciją
         shifted = PositionNedYaw(
             point[0] + offset[0],  # North
             point[1] + offset[1],  # East
-            0.0,                   # Down (Z)
+            -5.0,                   # Down (Z)
             0.0                    # Yaw
         )
         
@@ -86,7 +86,8 @@ async def fly_area(drone, route, offset):
         
         # Siunčiame poziciją dronui
         await drone.offboard.set_position_ned(shifted)
-        await asyncio.sleep(7)  # Lėtas skrydis tarp taškų(tiek daug nes kartais nespeja stabilizuotis pries judant i kita taska)
+        # Skirtingas laukimo laikas pirmajam taškui
+        await asyncio.sleep(20 if i == 0 else 2) #laikas nuskristi i taska
     
     print(f"Dronas {drone} baigė savo trajektoriją.")
 
@@ -117,27 +118,43 @@ async def arm_and_takeoff(drone):
     await asyncio.sleep(11)
 
 # Aktivuoja offboard režimą
-async def activate_offboard(drone):
-    async for position in drone.telemetry.position_velocity_ned():
-        current_x = position.position.north_m
-        current_y = position.position.east_m
-        current_z = position.position.down_m
-        break
+async def activate_offboard(drone, drone_id=None):
+    try:
+        # Laukiam pozicijos 100% patvirtintai
+        print(f"[Dronas {drone_id}] Laukiam pozicijos prieš offboard...")
+        async for position in drone.telemetry.position_velocity_ned():
+            current_x = position.position.north_m
+            current_y = position.position.east_m
+            current_z = position.position.down_m
+            break
+    except Exception as e:
+        print(f"[Dronas {drone_id}] Klaida gaunant poziciją: {e}")
+        return False
 
     initial_position = PositionNedYaw(current_x, current_y, current_z, 0.0)
 
-    try:
-        for _ in range(10):
-            await drone.offboard.set_position_ned(initial_position)
-            await asyncio.sleep(0.1)
+    print(f"[Dronas {drone_id}] Siunčiam setpoint'us prieš start...")
+    for _ in range(30):  # Daugiau iteracijų
+        await drone.offboard.set_position_ned(initial_position)
+        await asyncio.sleep(0.05)  # Greičiau siųsti
+    print(f"[Dronas {drone_id}] Bandom startuoti offboard...")
 
-        await drone.offboard.start()
-        await asyncio.sleep(3)
-    except OffboardError as e:
-        print(f" Offboard klaida: {e}")
-        return False
+    for attempt in range(10):
+        try:
+            await drone.offboard.start()
+            await asyncio.sleep(1)
+            print(f"[Dronas {drone_id}] Offboard režimas įjungtas.")
+            return True
+        except OffboardError as e:
+            print(f"[Dronas {drone_id}] Bandymas #{attempt+1} - Offboard klaida: {e}")
+            # Pabandom dar kartą išsiųsti keletą setpoint'ų
+            for _ in range(5):
+                await drone.offboard.set_position_ned(initial_position)
+                await asyncio.sleep(0.1)
+            await asyncio.sleep(1)
 
-    return True
+    print(f"[Dronas {drone_id}] Nepavyko įjungti offboard režimo.")
+    return False
 
 # Nusileidžia
 async def land_drone(drone):
@@ -164,6 +181,7 @@ async def control_drones():
 
  # Originali teritorija (kvadratas)
     area = [(0.0, 0.0),(100, 0.0),(100.0, 100.0),(0.0, 100.0)]
+ #  area = [(0.0, 0.0), (33.0, 66.0), (99.0, 99.0), (165.0, 66.0), (198.0, 0.0), (165.0, -66.0), (99.0, -99.0), (33.0, -66.0)] #kreiva teritorija
 
 # Nustatom dronų pozicijas (offset'ai NED sistemoje)
     drone_offsets = [
@@ -173,7 +191,9 @@ async def control_drones():
     ]
 
     await asyncio.gather(*(arm_and_takeoff(drone) for drone in drones))
+    await asyncio.sleep(5)  # Šiek tiek laiko stabilizuotis
     await asyncio.gather(*(activate_offboard(drone) for drone in drones))
+    await asyncio.sleep(2)  # Šiek tiek laiko stabilizuotis
 
     # Sugeneruojam taškus teritorijoje
     points = generate_grid_points(area, step=10.0)
