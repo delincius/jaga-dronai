@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1
 import folium
 from streamlit_folium import st_folium
 import numpy as np
@@ -17,6 +18,9 @@ import concurrent.futures
 import time
 import sys
 import traceback
+import subprocess
+import os
+import signal
 
 # Import your existing functions (silently)
 try:
@@ -51,12 +55,144 @@ if 'map_zoom' not in st.session_state:
     st.session_state.map_zoom = 13
 if 'mode' not in st.session_state:
     st.session_state.mode = "View Only"
+if 'request_location' not in st.session_state:
+    st.session_state.request_location = False
+if 'user_location' not in st.session_state:
+    st.session_state.user_location = None
+if 'camera_processes' not in st.session_state:
+    st.session_state.camera_processes = []
+if 'mission_thread' not in st.session_state:
+    st.session_state.mission_thread = None
+
+# Global variable to store camera processes (avoids Streamlit threading issues)
+active_camera_processes = []
 
 def console_log(message):
     """Simple console logging that works from threads"""
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     full_message = f"[{timestamp}] {message}"
     print(full_message)
+
+# Camera control functions
+def monitor_camera_output(process, drone_number):
+    """Monitor and log camera process output"""
+    try:
+        for line in iter(process.stdout.readline, ''):
+            if line:
+                console_log(f"📸 [Drone {drone_number}]: {line.strip()}")
+    except Exception as e:
+        console_log(f"❌ Error monitoring Drone {drone_number}: {e}")
+
+def start_camera_capture(drone_configs, capture_interval=5):
+    """Start camera capture processes for all drones"""
+    global active_camera_processes
+    processes = []
+    
+    # Check if video_capture.py exists
+    video_capture_script = "video_capture.py"
+    if not os.path.exists(video_capture_script):
+        console_log(f"❌ ERROR: {video_capture_script} not found!")
+        console_log("   Please ensure the video capture script is in the same directory as this GUI script.")
+        return []
+    
+    # Create output directory for images
+    output_dir = os.path.join("captured_images", datetime.now().strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(output_dir, exist_ok=True)
+    
+    console_log(f"📸 Starting camera capture, saving to: {output_dir}")
+    console_log(f"📸 Starting {len(drone_configs)} camera processes...")
+    console_log(f"📸 Capture interval: {capture_interval} seconds")
+    
+    for i, (video_port, drone_number) in enumerate(drone_configs):
+        try:
+            # Build command to run the video capture script
+            cmd = [
+                sys.executable,  # Python executable
+                video_capture_script,
+                "--port", str(video_port),
+                "--number", str(drone_number),
+                "--interval", str(capture_interval)
+            ]
+            
+            # Set environment variable to specify output directory
+            env = os.environ.copy()
+            env['OUTPUT_DIR'] = output_dir
+            
+            console_log(f"🚁 Starting camera for Drone {drone_number}...")
+            console_log(f"   Command: {' '.join(cmd)}")
+            console_log(f"   Port: {video_port}")
+            
+            # Start the process
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Combine stderr with stdout
+                env=env,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,  # Text mode
+                preexec_fn=os.setsid if os.name != 'nt' else None  # Create new process group
+            )
+            
+            # Start a thread to monitor this camera's output
+            monitor_thread = threading.Thread(
+                target=monitor_camera_output,
+                args=(process, drone_number),
+                daemon=True
+            )
+            monitor_thread.start()
+            
+            processes.append(process)
+            console_log(f"✅ Started camera capture for Drone {drone_number} (PID: {process.pid})")
+            
+            # Give each process time to start properly
+            time.sleep(1)
+            
+        except Exception as e:
+            console_log(f"❌ Failed to start camera for Drone {drone_number}: {str(e)}")
+            traceback.print_exc()
+    
+    console_log(f"📸 Total camera processes started: {len(processes)}")
+    
+    # Store processes globally to avoid Streamlit threading issues
+    active_camera_processes = processes
+    return processes
+
+def stop_camera_capture(processes):
+    """Stop all camera capture processes"""
+    console_log(f"📸 Stopping {len(processes)} camera processes...")
+    
+    for i, process in enumerate(processes):
+        try:
+            drone_num = i + 1
+            console_log(f"🛑 Stopping camera for Drone {drone_num} (PID: {process.pid})...")
+            
+            if os.name == 'nt':  # Windows
+                # On Windows, just terminate
+                process.terminate()
+            else:  # Unix/Linux/Mac
+                # Send SIGTERM to the process group
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            
+            # Wait for process to finish (with timeout)
+            try:
+                process.wait(timeout=5)
+                console_log(f"✅ Stopped camera process for Drone {drone_num}")
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't terminate gracefully
+                if os.name == 'nt':
+                    process.kill()
+                else:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                console_log(f"⚠️ Force killed camera process for Drone {drone_num}")
+                
+        except ProcessLookupError:
+            console_log(f"ℹ️ Camera process {i+1} already terminated")
+        except Exception as e:
+            console_log(f"❌ Error stopping camera process {i+1}: {str(e)}")
+    
+    # Clear the global processes list
+    processes.clear()
+    console_log("📸 All camera processes stopped")
 
 # Convert geographic coordinates to local NED
 def geo_to_ned(lat, lon, ref_lat, ref_lon):
@@ -87,19 +223,38 @@ def get_area_coordinates():
     
     return area_coords
 
-def run_mission_with_debug(area_coordinates):
-    """Run mission with debugging - NO SESSION STATE ACCESS"""
+def run_mission_with_debug(area_coordinates, num_drones, capture_interval=5):
+    """Run mission with debugging and camera capture"""
+    global active_camera_processes
+    
     def mission_thread():
         try:
             console_log("🚀 Starting mission...")
             console_log(f"📍 Area coordinates: {area_coordinates}")
+            console_log(f"🚁 Number of drones: {num_drones}")
+            console_log(f"📸 Capture interval: {capture_interval} seconds")
             
-            # Create new event loop
+            # Define camera configurations (port, drone_number)
+            # Adjust these ports based on your actual camera stream ports
+            camera_configs = [
+                (5600, 1),  # Drone 1 camera on port 5600
+                (5601, 2),  # Drone 2 camera on port 5601
+                (5602, 3),  # Drone 3 camera on port 5602
+            ][:num_drones]  # Only use cameras for active drones
+            
+            # Start camera capture with interval
+            camera_processes = start_camera_capture(camera_configs, capture_interval)
+            
+            # Wait a bit to ensure all cameras are initialized
+            console_log("⏳ Waiting for cameras to initialize...")
+            time.sleep(2)
+            
+            # Create new event loop for drone control
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             console_log("✅ Event loop created")
             
-            # Call the function
+            # Call the drone control function
             console_log("📞 Calling control_drones...")
             loop.run_until_complete(control_drones(area_coordinates))
             console_log("✅ Mission completed successfully!")
@@ -110,6 +265,11 @@ def run_mission_with_debug(area_coordinates):
             
         finally:
             console_log("🏁 Mission thread finishing...")
+            
+            # Stop camera capture
+            if active_camera_processes:
+                stop_camera_capture(active_camera_processes)
+            
             try:
                 loop.close()
             except:
@@ -121,10 +281,13 @@ def run_mission_with_debug(area_coordinates):
     thread.start()
     console_log("✅ Mission thread started")
     
+    # Store camera process count in session state for UI display
+    st.session_state.camera_processes = list(range(num_drones))  # Just store count for UI
+    
     return thread
 
 def execute_mission_simulation():
-    """Execute mission with debugging"""
+    """Execute mission with debugging and camera capture"""
     if not st.session_state.start_point or len(st.session_state.boundary_points) < 3:
         st.error("Missing start point or boundary points!")
         return
@@ -132,21 +295,115 @@ def execute_mission_simulation():
     area_coordinates = get_area_coordinates()
     
     if area_coordinates:
-        console_log(f"✅ Starting mission with coordinates: {area_coordinates}")
+        # Get parameters from sidebar
+        num_drones = st.session_state.get('num_drones', 3)
+        capture_interval = st.session_state.get('capture_interval', 5)
+        
+        console_log(f"✅ Starting mission with {num_drones} drones")
+        console_log(f"✅ Area coordinates: {area_coordinates}")
+        
         st.session_state.mission_running = True
         st.session_state.mission_status = "Mission Started - Check Console"
         
-        # Start the mission
-        run_mission_with_debug(area_coordinates)
+        # Start the mission with camera capture
+        mission_thread = run_mission_with_debug(area_coordinates, num_drones, capture_interval)
+        st.session_state.mission_thread = mission_thread
         
         st.success("Mission started! Check your terminal/console for detailed progress.")
         
     else:
         st.error("Could not generate area coordinates!")
 
+def stop_mission():
+    """Stop the mission and camera capture"""
+    global active_camera_processes
+    console_log("🛑 Stopping mission...")
+    
+    # Stop camera processes
+    if active_camera_processes:
+        stop_camera_capture(active_camera_processes)
+    
+    # Update status
+    st.session_state.mission_running = False
+    st.session_state.mission_status = "Mission Stopped"
+    st.session_state.camera_processes = []
+    
+    console_log("✅ Mission stopped")
+
 # Main UI
 st.title("🚁 Drone Control System")
 st.markdown("---")
+
+# Handle geolocation request
+if st.session_state.request_location:
+    # Simple auto-location with immediate callback
+    location_html = """
+    <script>
+    function setLocationAndReload(lat, lng) {
+        // Set URL parameters and reload
+        const url = new URL(window.location);
+        url.searchParams.set('auto_lat', lat);
+        url.searchParams.set('auto_lng', lng);
+        window.location.href = url.toString();
+    }
+    
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            function(position) {
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+                console.log('Location found:', lat, lng);
+                setLocationAndReload(lat, lng);
+            },
+            function(error) {
+                console.error('Location error:', error);
+                alert('Location access denied or unavailable. Please enable location access and try again.');
+                // Go back without setting location
+                const url = new URL(window.location);
+                url.searchParams.delete('auto_lat');
+                url.searchParams.delete('auto_lng');
+                window.location.href = url.toString();
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 300000
+            }
+        );
+    } else {
+        alert('Geolocation is not supported by this browser.');
+        window.history.back();
+    }
+    </script>
+    <div style="padding: 20px; text-align: center;">
+        <div style="font-size: 18px;">🌍 Getting your location...</div>
+        <div style="margin-top: 10px; color: #666;">Please allow location access when prompted</div>
+    </div>
+    """
+    
+    st.components.v1.html(location_html, height=100)
+
+# Check for auto-location from URL parameters
+try:
+    query_params = st.query_params
+    if 'auto_lat' in query_params and 'auto_lng' in query_params:
+        lat = float(query_params['auto_lat'])
+        lng = float(query_params['auto_lng'])
+        
+        # Set the location automatically
+        st.session_state.start_point = {'lat': lat, 'lng': lng}
+        st.session_state.map_center = [lat, lng] 
+        st.session_state.map_zoom = 16
+        st.session_state.request_location = False
+        
+        # Clear the URL parameters
+        st.query_params.clear()
+        
+        st.success(f"✅ Start point set to your location: {lat:.6f}, {lng:.6f}")
+        st.rerun()
+except:
+    # Handle any query param errors silently
+    pass
 
 # Sidebar for controls
 with st.sidebar:
@@ -160,8 +417,8 @@ with st.sidebar:
     )
     st.session_state.mode = mode
     
-    # Clear buttons
-    col1, col2 = st.columns(2)
+    # Clear buttons and location button
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Clear Start"):
             st.session_state.start_point = None
@@ -171,6 +428,14 @@ with st.sidebar:
         if st.button("Clear Boundary"):
             st.session_state.boundary_points = []
             st.rerun()
+            
+    with col3:
+        if st.button("📍 Try My Location"):
+            # This will trigger the geolocation JavaScript
+            st.session_state.request_location = True
+            st.rerun()
+    
+    st.info("💡 **Tip**: For accurate positioning, switch to 'Set Start Point' mode and click directly on the map where you are located. GPS location can be inaccurate.")
     
     st.markdown("---")
     
@@ -194,9 +459,15 @@ with st.sidebar:
     
     # Mission parameters
     st.subheader("Mission Parameters")
-    num_drones = st.number_input("Number of Drones", min_value=1, max_value=10, value=3)
+    num_drones = st.number_input("Number of Drones", min_value=1, max_value=10, value=3, key="num_drones")
     grid_step = st.slider("Grid Step Size (m)", min_value=5, max_value=50, value=10)
     altitude = st.slider("Flight Altitude (m)", min_value=5, max_value=100, value=5)
+    
+    # Camera settings
+    st.markdown("---")
+    st.subheader("Camera Settings")
+    capture_interval = st.slider("Image Capture Interval (s)", min_value=1, max_value=30, value=5, key="capture_interval")
+    st.info(f"📸 Cameras will capture images every {capture_interval} seconds during flight")
     
     st.markdown("---")
     
@@ -208,11 +479,18 @@ with st.sidebar:
                 st.rerun()
         else:
             if st.button("🛑 Stop Mission", type="secondary"):
-                st.session_state.mission_running = False
-                st.session_state.mission_status = "Mission Stopped"
+                stop_mission()
                 st.rerun()
     else:
         st.info("Set start point and at least 3 boundary points to start mission")
+    
+    # Display captured images info
+    if st.session_state.mission_running:
+        st.markdown("---")
+        st.subheader("📸 Camera Status")
+        st.info(f"Recording from {len(st.session_state.camera_processes)} cameras")
+        st.text("Images saved to:")
+        st.code("captured_images/[timestamp]")
 
 # Main content area
 col1, col2 = st.columns([2, 1])
@@ -312,6 +590,11 @@ with col2:
         st.error("🔴 Mission in Progress")
         st.write(f"Status: {st.session_state.mission_status}")
         st.info("Check your terminal/console for detailed progress updates!")
+        
+        # Show camera status
+        if st.session_state.camera_processes:
+            st.success(f"📸 {len(st.session_state.camera_processes)} cameras recording")
+        
     else:
         if "Failed" in st.session_state.mission_status:
             st.error(f"❌ {st.session_state.mission_status}")
@@ -362,7 +645,7 @@ with col2:
 
 # Footer
 st.markdown("---")
-st.markdown("🚁 **Drone Control System**")
+st.markdown("🚁 **Drone Control System** | 📸 **With Integrated Camera Capture**")
 
 # Optional debug info (hidden by default)
 if st.checkbox("Show Debug Info"):
@@ -378,3 +661,8 @@ if st.checkbox("Show Debug Info"):
     st.write("**Current map state:**")
     st.write(f"Center: {st.session_state.map_center}")
     st.write(f"Zoom: {st.session_state.map_zoom}")
+    
+    # Show camera process info
+    if st.session_state.camera_processes:
+        st.write("**Active camera processes:**")
+        st.write(f"Count: {len(st.session_state.camera_processes)}")
