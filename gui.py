@@ -1,130 +1,3 @@
-<<<<<<< HEAD
-import numpy as np
-from sklearn.cluster import KMeans
-from shapely.geometry import Polygon, Point
-from scipy.spatial import distance
-import matplotlib.pyplot as plt
-import random
-
-def generate_grid_points(area_points, step=10.0):
-    polygon = Polygon(area_points)
-    min_x, min_y, max_x, max_y = polygon.bounds
-
-    grid_points = []
-    x = min_x
-    while x <= max_x:
-        y = min_y
-        while y <= max_y:
-            p = Point(x, y)
-            if polygon.contains(p):
-                grid_points.append((x, y))
-            y += step
-        x += step
-    return grid_points
-
-def nearest_neighbor_path(points, start):
-    points = points.copy()
-    path = [start]
-    if start in points:
-        points.remove(start)
-
-    current = start
-    while points:
-        distances = [distance.euclidean(current, p) for p in points]
-        nearest_index = np.argmin(distances)
-        current = points.pop(nearest_index)
-        path.append(current)
-    return path
-
-def cluster_points(points, n_clusters=3):
-    """ Suskirsto taškus į n klasterių naudojant KMeans """
-    coords = np.array(points)
-    kmeans = KMeans(n_clusters=n_clusters, n_init='auto')
-    labels = kmeans.fit_predict(coords)
-
-    clusters = [[] for _ in range(n_clusters)]
-    for point, label in zip(points, labels):
-        clusters[label].append(point)
-    return clusters
-
-def split_points(points, n=3):
-    """ Atsitiktinai padalina taškus į n grupių """
-    shuffled = points.copy()
-    random.shuffle(shuffled)
-    return [shuffled[i::n] for i in range(n)]
-
-def assign_points_to_drones(points, drone_starts):
-    """ Priskiria kiekvieną tašką artimiausiam dronui pagal starto tašką """
-    assignments = [[] for _ in range(len(drone_starts))]
-
-    for p in points:
-        distances = [distance.euclidean(p, s) for s in drone_starts]
-        nearest_drone = np.argmin(distances)
-        assignments[nearest_drone].append(p)
-
-    return assignments
-
-def plot_multi_paths(paths, area_points, starts):
-    plt.figure(figsize=(10, 10))
-    
-    # Poligonas
-    poly = Polygon(area_points)
-    x_poly, y_poly = poly.exterior.xy
-    plt.plot(x_poly, y_poly, 'k--', label='Teritorijos riba')
-
-    colors = ['blue', 'green', 'orange']
-
-    for i, (path, start) in enumerate(zip(paths, starts)):
-        xs, ys = zip(*path)
-        color = colors[i % len(colors)]
-
-        # Maršrutas
-        plt.plot(xs, ys, color=color, linestyle='-', marker='o',
-                 linewidth=1, markersize=3, label=f'Dronas {i+1}')
-
-        # Pradžios taškas (tokios pačios spalvos kaip maršrutas)
-        plt.scatter([start[0]], [start[1]], c=color, s=100, edgecolors='black', label=f'Drono {i+1} startas')
-
-        # Linija nuo drono starto iki pirmo taško, jei nesutampa
-        if start != path[0]:
-            plt.plot([start[0], path[0][0]], [start[1], path[0][1]],
-                     color=color, linestyle='dotted', linewidth=1)
-
-    plt.gca().set_aspect('equal')
-    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    plt.grid(True)
-    plt.title("Dronų maršrutai (Artimiausio kaimyno algoritmas)")
-    plt.show()
-
-# ---- Pradžia ----
-
-# Pvz. teritorija
-#area = [(0.0, 0.0), (20.0, 60.0), (40.0, 80.0), (90.0, 70.0), (100.0, 20.0), (70.0, 10.0), (40.0, 20.0), (20.0, 10.0)]
-#area = [(0.0, 0.0), (0.0, 100.0), (100.0, 50.0), (0.0, 0.0)] #trikampis
-area = [(0.0, 0.0), (0.0, 100.0), (100.0, 100.0), (100.0, 0.0)] #kvadratas
-#area = [(0.0, 0.0), (40.0, 100.0), (140.0, 100.0), (180.0, 0.0) ] #trapecija
-#area = [(0.0, 0.0), (33.0, 66.0), (99.0, 99.0), (165.0, 66.0), (198.0, 0.0), (165.0, -66.0), (99.0, -99.0), (33.0, -66.0) ] #apskritimas
-
-# Tinklo taškai
-grid = generate_grid_points(area, step=10)
-
-# Nustatome pradines dronų pozicijas
-start_points = [(0, 0), (0, 5), (0, 10)]
-
-# Klasterizuojam taškus
-splits = cluster_points(grid, n_clusters=3)
-
-# Surandam artimiausią tašką kiekvienam drono startui savo klasteryje
-paths = []
-for cluster, start in zip(splits, start_points):
-    # Iš klasterio surandam artimiausią tašką starto taškui
-    nearest = min(cluster, key=lambda p: distance.euclidean(p, start))
-    path = nearest_neighbor_path(cluster, start=nearest)
-    paths.append(path)
-
-# Braižom
-plot_multi_paths(paths, area, start_points)
-=======
 import streamlit as st
 import streamlit.components.v1
 import folium
@@ -152,7 +25,7 @@ import signal
 # Import your existing functions (silently)
 try:
     from control_drones_k_means import (
-        generate_grid_points, kmeans_clustering, assign_drone_routes,
+        generate_grid_points, kmeans_clustering, assign_drone_routes, visualize_multiple_drone_paths_and_area,
         nearest_neighbor, fly_area, connect_drone,
         arm_and_takeoff, activate_offboard, land_drone, stop_offboard_mode, control_drones
     )
@@ -163,7 +36,7 @@ except ImportError as e:
 # Page configuration
 st.set_page_config(
     page_title="Drone Control System",
-    page_icon="🚁",
+    #page_icon="🚁",
     layout="wide"
 )
 
@@ -206,9 +79,9 @@ def monitor_camera_output(process, drone_number):
     try:
         for line in iter(process.stdout.readline, ''):
             if line:
-                console_log(f"📸 [Drone {drone_number}]: {line.strip()}")
+                console_log(f" [Drone {drone_number}]: {line.strip()}")
     except Exception as e:
-        console_log(f"❌ Error monitoring Drone {drone_number}: {e}")
+        console_log(f" Error monitoring Drone {drone_number}: {e}")
 
 def start_camera_capture(drone_configs, capture_interval=5):
     """Start camera capture processes for all drones"""
@@ -218,7 +91,7 @@ def start_camera_capture(drone_configs, capture_interval=5):
     # Check if video_capture.py exists
     video_capture_script = "video_capture.py"
     if not os.path.exists(video_capture_script):
-        console_log(f"❌ ERROR: {video_capture_script} not found!")
+        console_log(f" ERROR: {video_capture_script} not found!")
         console_log("   Please ensure the video capture script is in the same directory as this GUI script.")
         return []
     
@@ -226,9 +99,9 @@ def start_camera_capture(drone_configs, capture_interval=5):
     output_dir = os.path.join("captured_images", datetime.now().strftime("%Y%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
     
-    console_log(f"📸 Starting camera capture, saving to: {output_dir}")
-    console_log(f"📸 Starting {len(drone_configs)} camera processes...")
-    console_log(f"📸 Capture interval: {capture_interval} seconds")
+    console_log(f" Starting camera capture, saving to: {output_dir}")
+    console_log(f" Starting {len(drone_configs)} camera processes...")
+    console_log(f" Capture interval: {capture_interval} seconds")
     
     for i, (video_port, drone_number) in enumerate(drone_configs):
         try:
@@ -245,7 +118,7 @@ def start_camera_capture(drone_configs, capture_interval=5):
             env = os.environ.copy()
             env['OUTPUT_DIR'] = output_dir
             
-            console_log(f"🚁 Starting camera for Drone {drone_number}...")
+            console_log(f" Starting camera for Drone {drone_number}...")
             console_log(f"   Command: {' '.join(cmd)}")
             console_log(f"   Port: {video_port}")
             
@@ -269,16 +142,16 @@ def start_camera_capture(drone_configs, capture_interval=5):
             monitor_thread.start()
             
             processes.append(process)
-            console_log(f"✅ Started camera capture for Drone {drone_number} (PID: {process.pid})")
+            console_log(f" Started camera capture for Drone {drone_number} (PID: {process.pid})")
             
             # Give each process time to start properly
             time.sleep(1)
             
         except Exception as e:
-            console_log(f"❌ Failed to start camera for Drone {drone_number}: {str(e)}")
+            console_log(f" Failed to start camera for Drone {drone_number}: {str(e)}")
             traceback.print_exc()
     
-    console_log(f"📸 Total camera processes started: {len(processes)}")
+    console_log(f" Total camera processes started: {len(processes)}")
     
     # Store processes globally to avoid Streamlit threading issues
     active_camera_processes = processes
@@ -286,12 +159,12 @@ def start_camera_capture(drone_configs, capture_interval=5):
 
 def stop_camera_capture(processes):
     """Stop all camera capture processes"""
-    console_log(f"📸 Stopping {len(processes)} camera processes...")
+    console_log(f" Stopping {len(processes)} camera processes...")
     
     for i, process in enumerate(processes):
         try:
             drone_num = i + 1
-            console_log(f"🛑 Stopping camera for Drone {drone_num} (PID: {process.pid})...")
+            console_log(f" Stopping camera for Drone {drone_num} (PID: {process.pid})...")
             
             if os.name == 'nt':  # Windows
                 # On Windows, just terminate
@@ -303,23 +176,23 @@ def stop_camera_capture(processes):
             # Wait for process to finish (with timeout)
             try:
                 process.wait(timeout=5)
-                console_log(f"✅ Stopped camera process for Drone {drone_num}")
+                console_log(f" Stopped camera process for Drone {drone_num}")
             except subprocess.TimeoutExpired:
                 # Force kill if it doesn't terminate gracefully
                 if os.name == 'nt':
                     process.kill()
                 else:
                     os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                console_log(f"⚠️ Force killed camera process for Drone {drone_num}")
+                console_log(f" Force killed camera process for Drone {drone_num}")
                 
         except ProcessLookupError:
-            console_log(f"ℹ️ Camera process {i+1} already terminated")
+            console_log(f"ℹ Camera process {i+1} already terminated")
         except Exception as e:
-            console_log(f"❌ Error stopping camera process {i+1}: {str(e)}")
+            console_log(f" Error stopping camera process {i+1}: {str(e)}")
     
     # Clear the global processes list
     processes.clear()
-    console_log("📸 All camera processes stopped")
+    console_log(" All camera processes stopped")
 
 # Convert geographic coordinates to local NED
 def geo_to_ned(lat, lon, ref_lat, ref_lon):
@@ -356,10 +229,10 @@ def run_mission_with_debug(area_coordinates, num_drones, capture_interval=5):
     
     def mission_thread():
         try:
-            console_log("🚀 Starting mission...")
-            console_log(f"📍 Area coordinates: {area_coordinates}")
-            console_log(f"🚁 Number of drones: {num_drones}")
-            console_log(f"📸 Capture interval: {capture_interval} seconds")
+            console_log(" Starting mission...")
+            console_log(f" Area coordinates: {area_coordinates}")
+            console_log(f" Number of drones: {num_drones}")
+            console_log(f" Capture interval: {capture_interval} seconds")
             
             # Define camera configurations (port, drone_number)
             # Adjust these ports based on your actual camera stream ports
@@ -373,25 +246,25 @@ def run_mission_with_debug(area_coordinates, num_drones, capture_interval=5):
             camera_processes = start_camera_capture(camera_configs, capture_interval)
             
             # Wait a bit to ensure all cameras are initialized
-            console_log("⏳ Waiting for cameras to initialize...")
+            console_log(" Waiting for cameras to initialize...")
             time.sleep(2)
             
             # Create new event loop for drone control
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            console_log("✅ Event loop created")
+            console_log(" Event loop created")
             
             # Call the drone control function
-            console_log("📞 Calling control_drones...")
+            console_log(" Calling control_drones...")
             loop.run_until_complete(control_drones(area_coordinates))
-            console_log("✅ Mission completed successfully!")
+            console_log(" Mission completed successfully!")
             
         except Exception as e:
-            console_log(f"❌ Mission failed: {str(e)}")
-            console_log(f"❌ Full traceback:\n{traceback.format_exc()}")
+            console_log(f" Mission failed: {str(e)}")
+            console_log(f" Full traceback:\n{traceback.format_exc()}")
             
         finally:
-            console_log("🏁 Mission thread finishing...")
+            console_log(" Mission thread finishing...")
             
             # Stop camera capture
             if active_camera_processes:
@@ -400,13 +273,13 @@ def run_mission_with_debug(area_coordinates, num_drones, capture_interval=5):
             try:
                 loop.close()
             except:
-                console_log("⚠️ Error closing event loop")
+                console_log(" Error closing event loop")
     
     # Start the mission thread
     thread = threading.Thread(target=mission_thread)
     thread.daemon = True
     thread.start()
-    console_log("✅ Mission thread started")
+    console_log(" Mission thread started")
     
     # Store camera process count in session state for UI display
     st.session_state.camera_processes = list(range(num_drones))  # Just store count for UI
@@ -426,8 +299,8 @@ def execute_mission_simulation():
         num_drones = st.session_state.get('num_drones', 3)
         capture_interval = st.session_state.get('capture_interval', 5)
         
-        console_log(f"✅ Starting mission with {num_drones} drones")
-        console_log(f"✅ Area coordinates: {area_coordinates}")
+        console_log(f" Starting mission with {num_drones} drones")
+        console_log(f" Area coordinates: {area_coordinates}")
         
         st.session_state.mission_running = True
         st.session_state.mission_status = "Mission Started - Check Console"
@@ -444,7 +317,7 @@ def execute_mission_simulation():
 def stop_mission():
     """Stop the mission and camera capture"""
     global active_camera_processes
-    console_log("🛑 Stopping mission...")
+    console_log(" Stopping mission...")
     
     # Stop camera processes
     if active_camera_processes:
@@ -455,10 +328,10 @@ def stop_mission():
     st.session_state.mission_status = "Mission Stopped"
     st.session_state.camera_processes = []
     
-    console_log("✅ Mission stopped")
+    console_log(" Mission stopped")
 
 # Main UI
-st.title("🚁 Drone Control System")
+st.title(" Drone Control System")
 st.markdown("---")
 
 # Handle geolocation request
@@ -503,7 +376,7 @@ if st.session_state.request_location:
     }
     </script>
     <div style="padding: 20px; text-align: center;">
-        <div style="font-size: 18px;">🌍 Getting your location...</div>
+        <div style="font-size: 18px;"> Getting your location...</div>
         <div style="margin-top: 10px; color: #666;">Please allow location access when prompted</div>
     </div>
     """
@@ -526,7 +399,7 @@ try:
         # Clear the URL parameters
         st.query_params.clear()
         
-        st.success(f"✅ Start point set to your location: {lat:.6f}, {lng:.6f}")
+        st.success(f" Start point set to your location: {lat:.6f}, {lng:.6f}")
         st.rerun()
 except:
     # Handle any query param errors silently
@@ -557,12 +430,12 @@ with st.sidebar:
             st.rerun()
             
     with col3:
-        if st.button("📍 Try My Location"):
+        if st.button(" Try My Location"):
             # This will trigger the geolocation JavaScript
             st.session_state.request_location = True
             st.rerun()
     
-    st.info("💡 **Tip**: For accurate positioning, switch to 'Set Start Point' mode and click directly on the map where you are located. GPS location can be inaccurate.")
+    st.info(" **Tip**: For accurate positioning, switch to 'Set Start Point' mode and click directly on the map where you are located. GPS location can be inaccurate.")
     
     st.markdown("---")
     
@@ -570,17 +443,17 @@ with st.sidebar:
     st.subheader("Current Configuration")
     
     if st.session_state.start_point:
-        st.success(f"✅ Start Point: {st.session_state.start_point['lat']:.6f}, {st.session_state.start_point['lng']:.6f}")
+        st.success(f" Start Point: {st.session_state.start_point['lat']:.6f}, {st.session_state.start_point['lng']:.6f}")
     else:
-        st.warning("⚠️ No start point set")
+        st.warning(" No start point set")
     
     if st.session_state.boundary_points:
-        st.success(f"✅ Boundary Points: {len(st.session_state.boundary_points)}")
+        st.success(f" Boundary Points: {len(st.session_state.boundary_points)}")
         with st.expander("View Boundary Points"):
             for i, point in enumerate(st.session_state.boundary_points):
                 st.text(f"{i+1}: {point['lat']:.6f}, {point['lng']:.6f}")
     else:
-        st.warning("⚠️ No boundary points set")
+        st.warning(" No boundary points set")
     
     st.markdown("---")
     
@@ -594,18 +467,18 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Camera Settings")
     capture_interval = st.slider("Image Capture Interval (s)", min_value=1, max_value=30, value=5, key="capture_interval")
-    st.info(f"📸 Cameras will capture images every {capture_interval} seconds during flight")
+    st.info(f" Cameras will capture images every {capture_interval} seconds during flight")
     
     st.markdown("---")
     
     # Mission control buttons
     if st.session_state.start_point and len(st.session_state.boundary_points) >= 3:
         if not st.session_state.mission_running:
-            if st.button("🚀 Start Mission", type="primary"):
+            if st.button(" Start Mission", type="primary"):
                 execute_mission_simulation()
                 st.rerun()
         else:
-            if st.button("🛑 Stop Mission", type="secondary"):
+            if st.button(" Stop Mission", type="secondary"):
                 stop_mission()
                 st.rerun()
     else:
@@ -614,7 +487,7 @@ with st.sidebar:
     # Display captured images info
     if st.session_state.mission_running:
         st.markdown("---")
-        st.subheader("📸 Camera Status")
+        st.subheader(" Camera Status")
         st.info(f"Recording from {len(st.session_state.camera_processes)} cameras")
         st.text("Images saved to:")
         st.code("captured_images/[timestamp]")
@@ -627,11 +500,11 @@ with col1:
     
     # Add instruction based on mode
     if st.session_state.mode == "Set Start Point":
-        st.info("🎯 Click on the map to set the drone start point")
+        st.info(" Click on the map to set the drone start point")
     elif st.session_state.mode == "Add Boundary Points":
-        st.info("📍 Click on the map to add boundary points")
+        st.info(" Click on the map to add boundary points")
     else:
-        st.info("👁️ View mode - map interactions disabled")
+        st.info(" View mode - map interactions disabled")
     
     # Create map using current session state center and zoom
     m = folium.Map(
@@ -714,21 +587,21 @@ with col2:
     
     # Display current mission status
     if st.session_state.mission_running:
-        st.error("🔴 Mission in Progress")
+        st.error(" Mission in Progress")
         st.write(f"Status: {st.session_state.mission_status}")
         st.info("Check your terminal/console for detailed progress updates!")
         
         # Show camera status
         if st.session_state.camera_processes:
-            st.success(f"📸 {len(st.session_state.camera_processes)} cameras recording")
+            st.success(f" {len(st.session_state.camera_processes)} cameras recording")
         
     else:
         if "Failed" in st.session_state.mission_status:
-            st.error(f"❌ {st.session_state.mission_status}")
+            st.error(f" {st.session_state.mission_status}")
         elif "Completed" in st.session_state.mission_status:
-            st.success(f"✅ {st.session_state.mission_status}")
+            st.success(f" {st.session_state.mission_status}")
         else:
-            st.success("✅ Ready for Mission")
+            st.success(" Ready for Mission")
     
     # Show preview if we have enough points
     if st.session_state.start_point and len(st.session_state.boundary_points) >= 3:
@@ -751,28 +624,18 @@ with col2:
                 points_np = np.array(grid_points)
                 labels, centers = kmeans_clustering(points_np, num_drones)
                 
-                # Create preview visualization
-                fig, ax = plt.subplots(figsize=(5, 5))
-                scatter = ax.scatter(*zip(*grid_points), c=labels, cmap='viridis', marker='o', alpha=0.7, s=20)
-                ax.scatter(*zip(*centers), c='red', marker='x', s=80, label='Centroids')
-                ax.set_xlabel("North (m)")
-                ax.set_ylabel("East (m)")
-                ax.set_title("Mission Preview")
-                ax.legend()
-                ax.grid(True, alpha=0.3)
-                
-                st.pyplot(fig)
-                
-                # Preview statistics
-                st.metric("Preview: Total Points", len(grid_points))
-            else:
-                st.warning("No valid grid points in preview")
+            drone_routes = assign_drone_routes(points_np, labels, num_drones)
+            drone_routes_nn = []
+            for route in drone_routes:
+                drone_routes_nn.append(nearest_neighbor(route))
+            # Iškviečiame naują funkciją, kad parodytume vizualizaciją
+            visualize_multiple_drone_paths_and_area(drone_routes_nn, centers, get_area_coordinates())
         except Exception as e:
             st.error(f"Preview error: {str(e)}")
 
 # Footer
 st.markdown("---")
-st.markdown("🚁 **Drone Control System** | 📸 **With Integrated Camera Capture**")
+st.markdown(" **Drone Control System** |  **With Integrated Camera Capture**")
 
 # Optional debug info (hidden by default)
 if st.checkbox("Show Debug Info"):
@@ -793,4 +656,3 @@ if st.checkbox("Show Debug Info"):
     if st.session_state.camera_processes:
         st.write("**Active camera processes:**")
         st.write(f"Count: {len(st.session_state.camera_processes)}")
->>>>>>> 709183586ffcc738a727f448fa16eb75f733517b
