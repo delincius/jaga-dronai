@@ -8,6 +8,7 @@ from sklearn.cluster import KMeans
 from shapely.geometry import Polygon, Point
 import matplotlib.pyplot as plt
 from sklearn.neighbors import NearestNeighbors
+import streamlit as st
 
 # Sugeneruojame taškus teritorijoje pagal grid'ą
 def generate_grid_points(area_points, step=10.0):
@@ -52,6 +53,36 @@ def visualize_clusters(points, labels, centers):
     plt.legend()
      # Išsaugoti vaizdą kaip failą
     plt.savefig('clusters_output.png')
+
+def visualize_multiple_drone_paths_and_area(drone_routes, centers=None, area=None):
+    plt.figure(figsize=(10, 10))
+    colors = plt.cm.get_cmap('tab10', len(drone_routes))  # Skirtinga spalva kiekvienam dronui
+
+    # Piešimas dronų kelių
+    for i, route in enumerate(drone_routes):
+        # Konvertuojame iš NED į matplotlib koordinatę: (Y, X)
+        transposed_route = [(y, x) for (x, y) in route]
+        plt.plot(*zip(*transposed_route), marker='o', label=f'Dronas {i+1}', color=colors(i))
+
+    # Piešimas centroidų, jei pateikti
+    if centers is not None and len(centers) > 0:
+        transposed_centers = [(y, x) for (x, y) in centers]
+        plt.scatter(*zip(*transposed_centers), c='red', marker='x', s=100, label='Centroidai')
+
+    # Piešimas teritorijos (area), jei pateikta
+    if area is not None and len(area) > 0:
+        # Konvertuojame iš NED į matplotlib koordinates
+        transposed_area = [(y, x) for (x, y) in area]
+        # Užpildome teritoriją
+        transposed_area.append(transposed_area[0])  # Uždaryti teritoriją
+        plt.fill(*zip(*transposed_area), color='lightgray', alpha=0.5, label='Teritorija')
+
+    plt.title("Dronų maršrutai (K-Means + NN metodas)")
+    plt.xlabel("Rytai (X)")
+    plt.ylabel("Šiaurė (Y)")
+    plt.legend()
+    plt.grid(True)
+    st.pyplot(plt)
 
 # Pritaikyti maršrutą pagal artimiausią kaimyną
 def nearest_neighbor(points):
