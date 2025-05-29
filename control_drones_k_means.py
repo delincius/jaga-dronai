@@ -9,6 +9,7 @@ from shapely.geometry import Polygon, Point
 import matplotlib.pyplot as plt
 from sklearn.neighbors import NearestNeighbors
 import streamlit as st
+import threading
 
 # Sugeneruojame taškus teritorijoje pagal grid'ą
 def generate_grid_points(area_points, step=10.0):
@@ -99,7 +100,7 @@ def nearest_neighbor(points):
         
     return route
 
-# Skrenda pagal maršrutą
+# Skrenda pagal maršrutą (original version - kept for compatibility)
 async def fly_area(drone, route, offset):
     print(f"\nDronui {drone}: Maršrutas (NED koordinatės su offset):")
     
@@ -121,6 +122,85 @@ async def fly_area(drone, route, offset):
     
     print(f"Dronas {drone} baigė savo trajektoriją.")
 
+# NEW: Fly route with cancellation support
+async def fly_route_with_cancellation(drone, route, offset, cancel_event, drone_number):
+    """Fly a single drone route with cancellation checking"""
+    print(f"🚁 Drone {drone_number}: Starting route with {len(route)} waypoints")
+    
+    for i, point in enumerate(route):
+        # Check for cancellation before each waypoint
+        if cancel_event and cancel_event.is_set():
+            print(f"🛑 Drone {drone_number}: Mission cancelled at waypoint {i+1}/{len(route)}")
+            raise asyncio.CancelledError(f"Drone {drone_number} mission cancelled")
+        
+        # Calculate target position with offset
+        shifted = PositionNedYaw(
+            point[0] + offset[0],  # North
+            point[1] + offset[1],  # East
+            -15.0,                 # Down (altitude)
+            0.0                    # Yaw
+        )
+        
+        print(f"🚁 Drone {drone_number}: Going to waypoint {i+1}/{len(route)} - N:{shifted.north_m:.1f}, E:{shifted.east_m:.1f}")
+        
+        # Send position command
+        await drone.offboard.set_position_ned(shifted)
+        
+        # Wait at waypoint with periodic cancellation checking
+        for _ in range(7):  # 7 seconds total, check every second
+            if cancel_event and cancel_event.is_set():
+                print(f"🛑 Drone {drone_number}: Mission cancelled while at waypoint {i+1}")
+                raise asyncio.CancelledError(f"Drone {drone_number} mission cancelled")
+            await asyncio.sleep(1)
+    
+    print(f"✅ Drone {drone_number}: Completed route successfully")
+
+# NEW: Return drones to home positions
+async def return_drones_to_home(drones, drone_offsets):
+    """Return all drones to their starting positions"""
+    print("🏠 Returning drones to home positions...")
+    
+    # Return each drone to its starting position (offset from origin)
+    home_tasks = []
+    for i, (drone, offset) in enumerate(zip(drones, drone_offsets)):
+        home_position = PositionNedYaw(
+            offset[0],  # North offset
+            offset[1],  # East offset
+            -15.0,      # Same altitude as mission
+            0.0         # Yaw
+        )
+        print(f"🏠 Sending Drone {i+1} to home: N={offset[0]}, E={offset[1]}")
+        home_tasks.append(drone.offboard.set_position_ned(home_position))
+    
+    # Send all drones home simultaneously
+    await asyncio.gather(*home_tasks)
+    
+    # Wait for drones to reach home positions
+    print("🏠 Waiting for drones to reach home positions...")
+    await asyncio.sleep(10)  # Give time to reach home
+    
+    print("✅ All drones returned to home positions")
+
+# NEW: Execute drone routes with cancellation support
+async def fly_area_with_cancellation(drones, drone_routes_nn, drone_offsets, cancel_event):
+    """Execute drone routes with cancellation support"""
+    print(f"🚁 Starting flight execution for {len(drones)} drones...")
+    
+    # Create tasks for each drone
+    flight_tasks = []
+    for i in range(len(drones)):
+        task = fly_route_with_cancellation(
+            drones[i], 
+            drone_routes_nn[i], 
+            drone_offsets[i], 
+            cancel_event,
+            i + 1  # Drone number for logging
+        )
+        flight_tasks.append(task)
+    
+    # Execute all drone flights concurrently
+    await asyncio.gather(*flight_tasks)
+
 # Prisijungti prie drono
 async def connect_drone(mavsdk_server_address, port):
     drone = System(mavsdk_server_address=mavsdk_server_address, port=port)
@@ -136,7 +216,7 @@ async def connect_drone(mavsdk_server_address, port):
     print("Laukiama globalios pozicijos...")
     async for health in drone.telemetry.health():
         if health.is_global_position_ok and health.is_home_position_ok:
-            print(" Globali pozicija OK.")
+            print("✅ Globali pozicija OK.")
             break
 
     return drone
@@ -166,7 +246,7 @@ async def activate_offboard(drone):
         await drone.offboard.start()
         await asyncio.sleep(3)
     except OffboardError as e:
-        print(f" Offboard klaida: {e}")
+        print(f"❌ Offboard klaida: {e}")
         return False
 
     return True
@@ -183,34 +263,111 @@ async def stop_offboard_mode(drone):
     except Exception as e:
         print(f"Klaida stabdant offboard: {e}")
 
-# Kontroliuoti dronus
-async def control_drones(area):
+# NEW: Main control function with cancellation support
+async def control_drones_with_cancellation(area, cancel_event=None):
+    """Modified control_drones function that supports cancellation"""
     
     drones_info = [
         ("localhost", 50060),
         ("localhost", 50061),
         ("localhost", 50062)
     ]
-   
 
-    '''
-    drone_udp = [
-        "udp://:14542",
-        "udp://:14543",
-        "udp://:14544"
+    # Connect to all drones
+    print("🔗 Connecting to drones...")
+    drones = [await connect_drone(addr, port) for addr, port in drones_info]
+
+    # Set drone position offsets (NED system)
+    drone_offsets = [
+        (0.0, 3.0),     # Drone 1
+        (0.0, 6.0),     # Drone 2
+        (0.0, 9.0)      # Drone 3
     ]
-    '''
 
-    #drones = [await connect_drone(addr) for addr in drone_udp]
+    try:
+        # Arm and takeoff
+        print("🚁 Arming and taking off...")
+        await asyncio.gather(*(arm_and_takeoff(drone) for drone in drones))
+        
+        # Check for cancellation after takeoff
+        if cancel_event and cancel_event.is_set():
+            print("🛑 Mission cancelled during takeoff")
+            raise asyncio.CancelledError("Mission cancelled during takeoff")
+        
+        await asyncio.gather(*(activate_offboard(drone) for drone in drones))
+
+        # Generate mission waypoints
+        print("📍 Generating mission waypoints...")
+        points = generate_grid_points(area, step=10.0)
+        n_clusters = len(drones)
+        points_np = np.array(points)
+        labels, centers = kmeans_clustering(points_np, n_clusters)
+        drone_routes = assign_drone_routes(points, labels, len(drones))
+        
+        # Optimize routes with nearest neighbor
+        drone_routes_nn = []
+        for route in drone_routes:
+            drone_routes_nn.append(nearest_neighbor(route))
+
+        # Print route assignments
+        for i, route in enumerate(drone_routes_nn):
+            print(f"\n🚁 Drone {i+1} route ({len(route)} waypoints):")
+            for j, point in enumerate(route):
+                print(f"  Waypoint {j+1}: {point}")
+
+        # Execute mission with cancellation checking
+        print("🚁 Starting mission execution...")
+        await fly_area_with_cancellation(drones, drone_routes_nn, drone_offsets, cancel_event)
+
+    except asyncio.CancelledError:
+        print("🛑 Mission cancelled - initiating return to home...")
+        
+        # Return drones to home positions
+        try:
+            await return_drones_to_home(drones, drone_offsets)
+        except Exception as e:
+            print(f"❌ Error returning drones home: {e}")
+        
+        # Land drones
+        print("🛬 Landing drones...")
+        await asyncio.gather(*(land_drone(drone) for drone in drones))
+        
+        # Stop offboard mode
+        print("🔌 Stopping offboard mode...")
+        await asyncio.gather(*(stop_offboard_mode(drone) for drone in drones))
+        
+        print("✅ Mission cancelled successfully - all drones landed")
+        raise  # Re-raise to indicate cancellation
+        
+    except Exception as e:
+        print(f"❌ Unexpected error during mission: {e}")
+        raise
+    
+    else:
+        # Normal mission completion
+        print("✅ Mission completed normally - landing drones...")
+        await asyncio.gather(*(land_drone(drone) for drone in drones))
+        await asyncio.gather(*(stop_offboard_mode(drone) for drone in drones))
+        print("✅ All drones landed successfully")
+
+# ORIGINAL: Keep original control_drones function for backwards compatibility
+async def control_drones(area):
+    """Original control_drones function - kept for backwards compatibility"""
+    
+    drones_info = [
+        ("localhost", 50060),
+        ("localhost", 50061),
+        ("localhost", 50062)
+    ]
 
     # Prisijungiam prie visų dronų
     drones = [await connect_drone(addr, port) for addr, port in drones_info]
 
-# Nustatom dronų pozicijas (offset'ai NED sistemoje)
+    # Nustatom dronų pozicijas (offset'ai NED sistemoje)
     drone_offsets = [
-    (0.0, 3.0),     # Drone 1 (centered)
-    (0.0, 6.0),     # Drone 2
-    (0.0, 9.0)     # Drone 3
+        (0.0, 3.0),     # Drone 1 (centered)
+        (0.0, 6.0),     # Drone 2
+        (0.0, 9.0)     # Drone 3
     ]
 
     await asyncio.gather(*(arm_and_takeoff(drone) for drone in drones))
@@ -252,7 +409,6 @@ async def control_drones(area):
     await asyncio.gather(
          *(fly_area(drones[i], drone_routes_nn[i], drone_offsets[i]) for i in range(len(drones)))
      )
-
 
     await asyncio.gather(*(land_drone(drone) for drone in drones))
     await asyncio.gather(*(stop_offboard_mode(drone) for drone in drones))
